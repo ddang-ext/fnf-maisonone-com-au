@@ -1,0 +1,184 @@
+version: "3"
+
+services:
+  ###############################################################################
+  #                    APPLICATION CONTAINERS                                   #
+  ###############################################################################
+
+  # A minimal container which acts as a proxy between HTTP and the app container.
+  web:
+    container_name: "${PROJECT_NAME}_web"
+    build:
+      context: docker/web
+    env_file:
+      - ./.env
+    depends_on:
+      - app
+    ports:
+      - 80
+    volumes:
+      # WEB_DOCUMENT_ROOT=/app by default.
+      # This full codebase volume will be mounted only on local environement.
+      # K8S environement will have:
+      # - the COPY instructions from the secod level of the project specific Dockerfile
+      # - one volume only for public files
+      - ./:/app
+      ## Alternative for macOS users: Mutagen https://mutagen.io/documentation/orchestration/compose
+      #- drupal:/app
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.web.rule=Host(`web.${PROJECT_NAME}.localhost`)"
+      - "traefik.http.routers.web.entrypoints=web"
+      - "traefik.http.services.web.loadbalancer.server.port=80"
+
+  # The Drupal app where everythings happens.
+  app:
+    container_name: "${PROJECT_NAME}_app"
+    build:
+      context: docker/app
+    env_file:
+      - ./.env
+    depends_on:
+      - mysql
+    environment:
+      PHP_SENDMAIL_PATH: /usr/sbin/sendmail -t -i -S mailhog:1025
+      # https://dockerfile.readthedocs.io/en/latest/content/DockerImages/dockerfiles/php-dev.html
+    # Uncomment these lines if you need to use X-Debug tool and run "make up"
+    #   PHP_DEBUGGER: xdebug
+    #   XDEBUG_MODE: develop,debug
+    #   XDEBUG_CLIENT_HOST: 172.17.0.1 # Linux
+    #   XDEBUG_CLIENT_HOST: host.docker.internal # Docker 18.03+ Mac/Win
+    #   XDEBUG_CLIENT_HOST: 10.0.75.1 # Windows, Docker < 18.03
+    #   XDEBUG_CLIENT_PORT: 9003
+    #   XDEBUG_IDE_KEY: "${PROJECT_NAME}"
+    #   XDEBUG_SESSION: "${PROJECT_NAME}"
+    #   XDEBUG_START_WITH_REQUEST: "yes"
+    ## X-debug port
+    # ports:
+    #   - 9003
+    # This full codebase volume will be mounted only on local environement.
+    # K8S environement will have:
+    # - the COPY instruction from the secod stage of the Dockerfile
+    # - 2 volumes, one only for public files, one only for private files
+    volumes:
+      # Executable root will be /app/web according to WORKDIR instruction in Dockerfile.
+      - ./:/app
+      ## Alternative for macOS users: Mutagen https://mutagen.io/documentation/orchestration/compose
+      #- drupal:/app
+      # Local SSH key must be shared in order to allow composer install command execution
+      # inside the app container. Please, change the source "~/.ssh/id_rsa" location if nedded - it depends
+      # on your settings and the OS.
+      - ~/.ssh/id_rsa:/home/application/.ssh/id_rsa:ro
+      # PHP ovverrides. Put your custom PHP settings in this file.
+      - ./docker/php/php.ini:/opt/docker/etc/php/php.ini
+
+  ###############################################################################
+  #                          BACKEND SERVICES                                   #
+  ###############################################################################
+
+  # Will be Google Cloud SQL MySQL 8.0.
+  mysql:
+    container_name: "${PROJECT_NAME}_mysql"
+    image: mysql:8.0.26
+    stop_grace_period: 30s
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_general_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: $DB_ROOT_PASSWORD
+      MYSQL_DATABASE: $DB_NAME
+      MYSQL_USER: $DB_USER
+      MYSQL_PASSWORD: $DB_PASSWORD
+    ports:
+      - 3306
+    volumes:
+      - ./mysql:/var/lib/mysql
+      - ./docker/mysql/docker.cnf:/etc/mysql/conf.d/docker.cnf
+
+  # Will be Google Memory Store.
+  redis:
+    container_name: "${PROJECT_NAME}_redis"
+    image: redis:5.0.12-alpine
+    depends_on:
+      - web
+
+  # Will be an Operator container on GKE.
+  solr:
+    container_name: "${PROJECT_NAME}_solr"
+    image: wodby/solr:8
+    environment:
+      SOLR_HEAP: 1024m
+    volumes:
+      - ./solr:/opt/solr/server/solr
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.solr.rule=Host(`solr.${PROJECT_NAME}.localhost`)"
+      - "traefik.http.routers.solr.entrypoints=web"
+      - "traefik.http.services.solr.loadbalancer.server.port=${SOLR_PORT}"
+
+  # Will be Sendgrid on MH environements.
+  mailhog:
+    container_name: "${PROJECT_NAME}_mailhog"
+    image: mailhog/mailhog
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.mailhog.rule=Host(`mailhog.${PROJECT_NAME}.localhost`)"
+      - "traefik.http.routers.mailhog.entrypoints=web"
+      - "traefik.http.services.mailhog.loadbalancer.server.port=8025"
+
+  ###############################################################################
+  #                          LOCAL DEV TOOLS                                    #
+  ###############################################################################
+
+  # Adminer is a database management tool.
+  adminer:
+    container_name: "${PROJECT_NAME}_adminer"
+    image: wodby/adminer:4.8
+    environment:
+      ADMINER_DEFAULT_DB_HOST: $DB_HOST
+      ADMINER_DEFAULT_DB_NAME: $DB_NAME
+      ADMINER_DEFAULT_USER: $DB_USER
+      ADMINER_DEFAULT_PASSWORD: $DB_PASSWORD
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.adminer.rule=Host(`adminer.${PROJECT_NAME}.localhost`)"
+      - "traefik.http.routers.adminer.entrypoints=web"
+      - "traefik.http.services.adminer.loadbalancer.server.port=9000"
+
+  # Traefik is a HTTP reverse proxy and load balancer.
+  traefik:
+    container_name: "${PROJECT_NAME}_traefik"
+    image: "traefik:v2.7"
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "80:80"
+      - "8080:8080" # Dashboard
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+
+# x-mutagen extension configuration for macOS users
+# x-mutagen:
+#  sync:
+#    defaults:
+#      ignore:
+#        vcs: true
+#        paths:
+#        - 'vendor'
+#        - .DS_Store
+#        - .history
+#        - .idea
+#    drupal:
+#      alpha: "."
+#      beta: "volume://drupal"
+#      configurationBeta:
+#        permissions:
+#          defaultFileMode: 0644
+#          defaultDirectoryMode: 0755
+#          defaultOwner: "id:1000"
+#          defaultGroup: "id:1000"
+
+# volumes:
+# # For macOS users (Mutagen)
+#  drupal:

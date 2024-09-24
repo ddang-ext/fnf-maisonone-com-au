@@ -1,0 +1,10 @@
+.gcloudignore
+
+.dockerignore
+.git
+
+site/.dockerignore
+site/.git
+
+README.md
+site/README.md

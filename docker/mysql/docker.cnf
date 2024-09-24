@@ -1,0 +1,5 @@
+[mysqld]
+skip-host-cache
+skip-name-resolve
+# init_connect='SET default_collation_for_utf8mb4=utf8mb4_general_ci'
+collation-server = utf8mb4_general_ci

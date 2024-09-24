@@ -1,0 +1,21 @@
+
+COPY conf/ /opt/docker/
+
+USER root
+
+RUN set -x \
+    && apk-install \
+        make \
+        autoconf \
+        g++ \
+    && apk add --update linux-headers \
+    && pecl install xdebug \
+    && apk del -f --purge \
+        autoconf \
+        g++ \
+        make \
+    && docker-php-ext-enable xdebug \
+    && docker-run-bootstrap \
+    && docker-image-cleanup
+
+USER application
